@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>XML Conv - Conversor de NF-e para CSV</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .drop-zone--over { @apply border-blue-500 bg-blue-50; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f1f1; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-900">
+
+    <div class="max-w-4xl mx-auto px-4 py-12">
+        <!-- Header -->
+        <header class="text-center mb-10">
+            <div class="inline-flex items-center justify-center w-16 h-16 bg-blue-600 text-white rounded-2xl mb-4 shadow-lg shadow-blue-200">
+                <i class="fas fa-file-csv text-3xl"></i>
+            </div>
+            <h1 class="text-3xl font-bold tracking-tight text-slate-800">XML Conv</h1>
+            <p class="text-slate-500 mt-2">Converta múltiplas Notas Fiscais (.xml) para uma planilha (.csv) instantaneamente.</p>
+        </header>
+
+        <!-- Main Card -->
+        <div class="bg-white rounded-3xl shadow-xl shadow-slate-200/60 overflow-hidden border border-slate-100">
+            
+            <!-- Upload Zone -->
+            <div id="drop-zone" class="p-8 border-2 border-dashed border-slate-200 m-6 rounded-2xl transition-all duration-300 flex flex-col items-center justify-center cursor-pointer hover:border-blue-400 hover:bg-slate-50 group">
+                <input type="file" id="file-input" multiple accept=".xml" class="hidden">
+                <div class="w-16 h-16 bg-slate-100 text-slate-400 rounded-full flex items-center justify-center mb-4 group-hover:bg-blue-100 group-hover:text-blue-500 transition-colors">
+                    <i class="fas fa-cloud-upload-alt text-2xl"></i>
+                </div>
+                <h3 class="text-lg font-semibold text-slate-700">Arraste seus arquivos XML aqui</h3>
+                <p class="text-sm text-slate-400 mt-1">ou clique para selecionar do seu computador</p>
+                <div class="mt-4 flex gap-2 text-xs font-medium uppercase tracking-wider text-slate-400">
+                    <span>NF-e</span>
+                    <span>•</span>
+                    <span>NFC-e</span>
+                </div>
+            </div>
+
+            <!-- List of Files / Progress -->
+            <div id="process-section" class="px-8 pb-8 hidden">
+                <div class="flex items-center justify-between mb-4">
+                    <h2 class="font-bold text-slate-700">Arquivos em processamento (<span id="file-count">0</span>)</h2>
+                    <button id="clear-btn" class="text-sm text-red-500 hover:text-red-600 font-medium">Limpar tudo</button>
+                </div>
+                
+                <div id="files-list" class="space-y-3 max-h-96 overflow-y-auto pr-2">
+                    <!-- Arquivos inseridos via JS -->
+                </div>
+
+                <!-- Action Button -->
+                <div id="action-container" class="mt-8 pt-6 border-t border-slate-100 flex justify-center">
+                    <button id="download-btn" disabled class="w-full sm:w-auto px-8 py-4 bg-slate-200 text-slate-500 rounded-xl font-bold flex items-center justify-center gap-3 transition-all cursor-not-allowed">
+                        <i class="fas fa-download"></i>
+                        Baixar Planilha CSV
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Instructions -->
+        <footer class="mt-12 text-center text-slate-400 text-sm">
+            <p>Privacidade: Seus arquivos são processados diretamente no seu navegador e não são enviados para nenhum servidor.</p>
+        </footer>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="notification" class="fixed bottom-8 left-1/2 -translate-x-1/2 px-6 py-3 bg-slate-800 text-white rounded-full text-sm font-medium shadow-2xl transition-all duration-500 opacity-0 translate-y-10 pointer-events-none">
+        Conversão concluída com sucesso!
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const filesList = document.getElementById('files-list');
+        const processSection = document.getElementById('process-section');
+        const fileCountSpan = document.getElementById('file-count');
+        const downloadBtn = document.getElementById('download-btn');
+        const clearBtn = document.getElementById('clear-btn');
+        const notification = document.getElementById('notification');
+
+        let allDataRows = [];
+        let processingQueue = [];
+
+        // Header do CSV baseado no modelo de NF-e
+        const csvHeaders = [
+            'Chave de Acesso', 'Numero NF', 'Serie', 'Data Emissao', 
+            'Emitente CNPJ', 'Emitente Nome', 'Destinatario CPF/CNPJ', 'Destinatario Nome',
+            'Item', 'Codigo Prod', 'Descricao', 'NCM', 'CFOP', 'Unidade', 'Quantidade', 'Valor Unitario', 'Valor Total Item',
+            'Total NF'
+        ];
+
+        // Eventos de clique e drag-drop
+        dropZone.addEventListener('click', () => fileInput.click());
+        
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('drop-zone--over');
+        });
+
+        ['dragleave', 'dragend'].forEach(type => {
+            dropZone.addEventListener(type, () => {
+                dropZone.classList.remove('drop-zone--over');
+            });
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('drop-zone--over');
+            if (e.dataTransfer.files.length > 0) {
+                handleFiles(e.dataTransfer.files);
+            }
+        });
+
+        clearBtn.addEventListener('click', () => {
+            allDataRows = [];
+            filesList.innerHTML = '';
+            processSection.classList.add('hidden');
+            downloadBtn.disabled = true;
+            updateDownloadBtnState();
+        });
+
+        function handleFiles(files) {
+            const validFiles = Array.from(files).filter(f => f.type === 'text/xml' || f.name.endsWith('.xml'));
+            
+            if (validFiles.length === 0) return;
+
+            processSection.classList.remove('hidden');
+            
+            validFiles.forEach(file => {
+                addFileToList(file);
+            });
+            
+            updateFileCount();
+        }
+
+        function addFileToList(file) {
+            const fileId = Math.random().toString(36).substring(7);
+            const item = document.createElement('div');
+            item.className = "flex items-center gap-4 p-4 bg-slate-50 rounded-xl border border-slate-100";
+            item.id = `file-${fileId}`;
+            
+            item.innerHTML = `
+                <div class="w-10 h-10 bg-blue-100 text-blue-600 rounded-lg flex items-center justify-center shrink-0">
+                    <i class="fas fa-file-code"></i>
+                </div>
+                <div class="flex-1 min-w-0">
+                    <div class="flex justify-between mb-1">
+                        <span class="text-sm font-semibold text-slate-700 truncate pr-4">${file.name}</span>
+                        <span id="status-${fileId}" class="text-xs font-bold text-blue-500 uppercase tracking-tighter">Aguardando</span>
+                    </div>
+                    <div class="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                        <div id="progress-${fileId}" class="bg-blue-500 h-full transition-all duration-500" style="width: 0%"></div>
+                    </div>
+                </div>
+            `;
+            
+            filesList.prepend(item);
+            processFile(file, fileId);
+        }
+
+        async function processFile(file, id) {
+            const statusEl = document.getElementById(`status-${id}`);
+            const progressEl = document.getElementById(`progress-${id}`);
+            
+            try {
+                statusEl.innerText = "Lendo...";
+                progressEl.style.width = "30%";
+                
+                const text = await file.text();
+                progressEl.style.width = "60%";
+                
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(text, "text/xml");
+                
+                // Extração de dados (considerando namespaces da NF-e)
+                const getVal = (selector, parent = xmlDoc) => {
+                    const el = parent.querySelector(selector);
+                    return el ? el.textContent : '';
+                };
+
+                const chave = getVal('infNFe').replace('NFe', '') || '';
+                const nNF = getVal('nNF');
+                const serie = getVal('serie');
+                const dhEmi = getVal('dhEmi');
+                const emitCNPJ = getVal('emit CNPJ');
+                const emitNome = getVal('emit xNome');
+                const destID = getVal('dest CNPJ') || getVal('dest CPF');
+                const destNome = getVal('dest xNome');
+                const vNF = getVal('total vNF');
+
+                const itens = xmlDoc.querySelectorAll('det');
+                
+                if (itens.length === 0) throw new Error("Sem itens");
+
+                itens.forEach(item => {
+                    const nItem = item.getAttribute('nItem');
+                    const cProd = getVal('prod cProd', item);
+                    const xProd = getVal('prod xProd', item);
+                    const ncm = getVal('prod NCM', item);
+                    const cfop = getVal('prod CFOP', item);
+                    const uCom = getVal('prod uCom', item);
+                    const qCom = getVal('prod qCom', item);
+                    const vUnCom = getVal('prod vUnCom', item);
+                    const vProd = getVal('prod vProd', item);
+
+                    allDataRows.push([
+                        chave, nNF, serie, dhEmi, 
+                        emitCNPJ, emitNome, destID, destNome,
+                        nItem, cProd, xProd, ncm, cfop, uCom, qCom, vUnCom, vProd,
+                        vNF
+                    ]);
+                });
+
+                // Finalização visual
+                setTimeout(() => {
+                    progressEl.style.width = "100%";
+                    progressEl.classList.replace('bg-blue-500', 'bg-emerald-500');
+                    statusEl.innerText = "Concluído";
+                    statusEl.classList.replace('text-blue-500', 'text-emerald-500');
+                    updateDownloadBtnState();
+                    showNotification();
+                }, 400);
+
+            } catch (err) {
+                console.error(err);
+                statusEl.innerText = "Erro";
+                statusEl.classList.replace('text-blue-500', 'text-red-500');
+                progressEl.classList.replace('bg-blue-500', 'bg-red-500');
+            }
+        }
+
+        function updateFileCount() {
+            fileCountSpan.innerText = filesList.children.length;
+        }
+
+        function updateDownloadBtnState() {
+            if (allDataRows.length > 0) {
+                downloadBtn.disabled = false;
+                downloadBtn.classList.remove('bg-slate-200', 'text-slate-500', 'cursor-not-allowed');
+                downloadBtn.classList.add('bg-blue-600', 'text-white', 'hover:bg-blue-700', 'shadow-lg', 'shadow-blue-200');
+            } else {
+                downloadBtn.disabled = true;
+                downloadBtn.classList.add('bg-slate-200', 'text-slate-500', 'cursor-not-allowed');
+                downloadBtn.classList.remove('bg-blue-600', 'text-white', 'hover:bg-blue-700', 'shadow-lg', 'shadow-blue-200');
+            }
+        }
+
+        function showNotification() {
+            notification.classList.remove('opacity-0', 'translate-y-10');
+            setTimeout(() => {
+                notification.classList.add('opacity-0', 'translate-y-10');
+            }, 3000);
+        }
+
+        downloadBtn.addEventListener('click', () => {
+            if (allDataRows.length === 0) return;
+
+            let csvContent = "\uFEFF"; // BOM para Excel reconhecer caracteres especiais
+            csvContent += csvHeaders.join(';') + "\r\n";
+            
+            allDataRows.forEach(row => {
+                const escapedRow = row.map(cell => `"${String(cell).replace(/"/g, '""')}"`);
+                csvContent += escapedRow.join(';') + "\r\n";
+            });
+
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            
+            const timestamp = new Date().toISOString().slice(0,10);
+            link.setAttribute("href", url);
+            link.setAttribute("download", `notas_fiscais_convertidas_${timestamp}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    </script>
+</body>
+</html>
